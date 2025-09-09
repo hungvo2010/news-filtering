@@ -9,6 +9,43 @@ from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
 import re
+import time
+import feedparser
+from readability import Document
+
+
+def fetch_full_article_content(url: str) -> str:
+    """
+    Fetch and extract clean article content from URL using readability.
+    
+    Args:
+        url: Article URL
+        
+    Returns:
+        Clean article text content
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        # Set encoding to utf-8 for Vietnamese content
+        response.encoding = 'utf-8'
+        
+        # Use readability to extract clean content
+        doc = Document(response.text)  # Use .text instead of .content to avoid bytes issues
+        clean_content = doc.content()
+        
+        # Parse HTML to get text only
+        soup = BeautifulSoup(clean_content, 'html.parser')
+        text_content = soup.get_text(strip=True)
+        
+        return text_content
+    except Exception as e:
+        print(f"Error fetching full content from {url}: {e}")
+        return ""
 
 
 def parse_rss_date(date_string: str) -> datetime:
@@ -64,57 +101,78 @@ def format_article(raw_article: Dict[str, Any], source_name: str) -> Dict[str, s
     if len(summary) > 150:
         summary = summary[:147] + '...'
     
+    # Handle publish_time - convert struct_time to timezone-aware datetime
+    published_parsed = raw_article.get('published_parsed')
+    if published_parsed and hasattr(published_parsed, 'tm_year'):
+        # Convert struct_time to datetime with Vietnam timezone
+        publish_time = datetime(*published_parsed[:6], tzinfo=timezone(timedelta(hours=7)))
+    else:
+        # Fallback to current time with Vietnam timezone
+        publish_time = datetime.now(timezone(timedelta(hours=7)))
+    
     return {
         'title': raw_article.get('title', ''),
         'summary': summary,
         'url': raw_article.get('link', ''),
-        'publish_time': raw_article.get('published_parsed', datetime.now(timezone(timedelta(hours=7)))),
+        'publish_time': publish_time,
         'source': source_name
     }
 
 
 def fetch_rss_articles(url: str, current_date: datetime) -> List[Dict[str, str]]:
     """
-    Fetch articles from RSS feed for current date only.
+    Fetch articles from RSS feed using feedparser with full content extraction.
     
     Args:
         url: RSS feed URL
         current_date: Current date for filtering
         
     Returns:
-        List of article dictionaries
+        List of article dictionaries with full content
     """
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        
-        # Parse XML
-        root = ET.fromstring(response.content)
+        # Use feedparser for robust RSS parsing
+        feed = feedparser.parse(url)
         articles = []
         
         # Extract source name from URL
         source_name = url.split('//')[1].split('/')[0] if '//' in url else 'Unknown'
         
-        # Find all item elements
-        for item in root.findall('.//item'):
-            title_elem = item.find('title')
-            desc_elem = item.find('description')
-            link_elem = item.find('link')
-            pub_date_elem = item.find('pubDate')
-            
-            if title_elem is not None and pub_date_elem is not None:
-                pub_date = parse_rss_date(pub_date_elem.text)
+        for entry in feed.entries:
+            if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                # Convert struct_time to datetime with Vietnam timezone
+                pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone(timedelta(hours=7)))
                 
                 # Only include articles from current date
                 if is_same_date(pub_date, current_date):
-                    raw_article = {
-                        'title': title_elem.text or '',
-                        'description': desc_elem.text or '' if desc_elem is not None else '',
-                        'link': link_elem.text or '' if link_elem is not None else '',
-                        'published_parsed': pub_date
-                    }
+                    # Get basic metadata
+                    title = entry.get('title', '')
+                    link = entry.get('link', '')
+                    summary = entry.get('summary', '')[:150]
                     
-                    articles.append(format_article(raw_article, source_name))
+                    # Fetch full content only for articles that pass basic checks
+                    # Limit to first few articles to avoid too many requests
+                    article_count = len(articles)
+                    if article_count < 5 and link:  # Only fetch full content for first 5 articles per source
+                        full_content = fetch_full_article_content(link)
+                    else:
+                        full_content = ''
+                    
+                    # Use full content for summary if available, otherwise use RSS summary
+                    if full_content:
+                        content_summary = full_content[:150] + '...' if len(full_content) > 150 else full_content
+                    else:
+                        content_summary = summary[:150] + '...' if len(summary) > 150 else summary
+                    
+                    article = {
+                        'title': title,
+                        'summary': content_summary,
+                        'url': link,
+                        'publish_time': pub_date,
+                        'source': source_name,
+                        'full_content': full_content  # Store full content for enhanced classification
+                    }
+                    articles.append(article)
         
         return articles[:200]  # Limit to 200 articles per source
         

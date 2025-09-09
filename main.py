@@ -86,9 +86,13 @@ def test_pipeline():
     )
     print(f"   Selected {len(filtered_articles)} articles after filtering")
     
-    # Display filtered articles
+    # Display filtered articles with full details
     for i, article in enumerate(filtered_articles):
-        print(f"   Selected Article {i+1}: {article['title'][:60]}... ({article['source']})")
+        print(f"   Selected Article {i+1}: {article['title']} ({article['source']})")
+        print(f"      Summary: {article['summary']}")
+        print(f"      URL: {article['url']}")
+        print(f"      Time: {article.get('publish_time', 'Unknown')}")
+        print()
     
     # Step 3: Generate and optionally send email
     print("\n3. Email generation test...")
